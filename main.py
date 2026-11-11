@@ -79,19 +79,17 @@ def demo_recognition():
     from recognize import predict
     from config import DEMO_TEXT, ATTRS
 
-    print("\n" + "=" * 60)
-    print("ДЕМОНСТРАЦИЯ: распознавание ПДн (все атрибуты, все форматы)")
-    print("=" * 60)
-    print(f"\nИсходный текст ({len(DEMO_TEXT)} символов):\n{DEMO_TEXT}")
+    print("Распознавание ПДн (все атрибуты, все форматы)")
+    print("\nИсходный текст ")
 
     entities = predict(DEMO_TEXT)                                # распознавание
-    print(f"\nНайдено сущностей: {len(entities)}")
+    print(f"Найдено сущностей: {len(entities)}")
 
     by_attr = defaultdict(list)                                  # группируем по атрибуту
     for attr, s, e in entities:
         by_attr[attr].append(DEMO_TEXT[s:e])
 
-    print("\nПо атрибутам:")
+    print("По атрибутам:")
     for attr in ATTRS:
         if attr in by_attr:
             vals = by_attr[attr]
@@ -102,23 +100,34 @@ def demo_recognition():
 
 # ========== ДЕМОНСТРАЦИЯ СКВОЗНОГО ЦИКЛА ==========
 def demo_pipeline():
-    """Сквозной цикл на демонстрационном тексте: распознать → обезличить."""
+    """Сквозной цикл: одинаковые и однокоренные → одинаковые замены; два запуска.
+
+    Проверяет три свойства нового anon():
+      1. Внутри одного запуска одинаковые сущности → одинаковые замены
+         (два одинаковых ИНН → один новый ИНН).
+      2. Однокоренные сущности → однокоренные замены
+         (Иванов / Иванова / Ивановой → одна фамилия в разных формах).
+      3. Между запусками — разные замены (случайность).
+    """
     from anonymize import recognize_and_anonymize
-    from config import DEMO_TEXT
 
-    print("\n" + "=" * 60)
-    print("ДЕМОНСТРАЦИЯ: сквозной цикл (распознавание + обезличивание)")
-    print("=" * 60)
-    print(f"\nБыло:\n{DEMO_TEXT}\n")
+    print("Сквозной цикл (распознавание + обезличивание)")
 
-    anonymized = recognize_and_anonymize(DEMO_TEXT)
-    print(f"Стало:\n{anonymized}\n")
+    # Текст с повторяющимися и однокоренными сущностями
+    text = (
+        "Иванов Иван, ИНН 770698959438. "
+        "Нет Иванова, передали сообщение Ивановой. "
+        "Повторно ИНН 770698959438."
+    )
+    print(f"Исходный текст:\n{text}")
 
-    # Второй вызов — проверка случайности (значения должны отличаться)
-    anonymized2 = recognize_and_anonymize(DEMO_TEXT)
-    print(f"Повторный вызов (проверка случайности):\n{anonymized2}")
-    same = anonymized == anonymized2
-    print(f"\n{'⚠ ВНИМАНИЕ: повторный вызов дал тот же результат' if same else '✅ Значения разные — случайность работает'}")
+    # --- Запуск 1 ---
+    result1 = recognize_and_anonymize(text)
+    print(f"Запуск 1:\n{result1}")
+
+    # --- Запуск 2 ---
+    result2 = recognize_and_anonymize(text)
+    print(f"Запуск 2:\n{result2}")
 
 
 # ========== MAIN ==========
@@ -134,11 +143,11 @@ if __name__ == "__main__":
     model_exists = os.path.exists(os.path.join(MODEL_OUT, "config.json"))
     if RETRAIN and model_exists:
         shutil.rmtree(MODEL_OUT, ignore_errors=True)         # удаляем старую модель
-        print(f"🗑 Удалена старая модель: {MODEL_OUT}")
+        print(f"!!! Удалена старая модель: {MODEL_OUT} !!!")
         model_exists = False
 
     if model_exists:
-        print(f"ℹ Модель найдена в {MODEL_OUT} — обучение пропускается (RETRAIN=False)")
+        print(f"Модель найдена в {MODEL_OUT} — обучение пропускается")
     else:
         run_training(examples)                           # обучаем
         pass
@@ -147,12 +156,8 @@ if __name__ == "__main__":
     if not SKIP_TEST:
         run_evaluation(factrueval_test_docs)                 # метрики + assert'ы
     else:
-        print("⏭ SKIP_TEST=True — оценка пропускается")
+        print("Оценка пропускается")
 
     # --- Демонстрация (всегда) ---
     demo_recognition()                                       # predict
     demo_pipeline()                                          # recognize_and_anonymize
-
-    print("\n" + "=" * 60)
-    print("✅ Готово.")
-    print("=" * 60)

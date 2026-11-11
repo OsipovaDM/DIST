@@ -6,7 +6,7 @@ import pymorphy3
 from faker import Faker
 
 from config import (
-    EMAIL_ALPHABET, EMAIL_MIN_LOCAL_LEN, MAX_NAME_GEN_ATTEMPTS,
+    EMAIL_ALPHABET, EMAIL_MIN_LOCAL_LEN,
     INN_COEFF_C11, INN_COEFF_C12, digits_only,
 )
 from recognize import predict, validate_luhn
@@ -16,18 +16,6 @@ fake = Faker("ru_RU")                # генератор русских имё�
 rng = random.SystemRandom()          # криптостойкий ГПСЧ — не зависит от seed
 
 # ========== МОРФОЛОГИЯ ==========
-def _find_parse_with_tag(word: str, tag_name: str):
-    """Возвращает первый разбор pymorphy с тегом tag_name (Name/Surn/Patr).
-
-    Нужно потому что «Стоян» может разобраться как прилагательное, и склонение
-    даст «стоянный». Ищем именно человеческий разбор, иначе None.
-    """
-    for p in morph.parse(word):                                # перебираем все разборы
-        if tag_name in p.tag:                                  # нашли нужный тег
-            return p
-    return None                                                # ни один разбор не подошёл
-
-
 def get_grammemes(word: str) -> Dict[str, Optional[str]]:
     """Род, число и падеж слова (приоритет — разбору как ФИО)."""
     parses = morph.parse(word)                                 # все разборы слова
@@ -58,48 +46,85 @@ def inflect_to(word: str, grammemes: Dict[str, Optional[str]]) -> str:
     return inflected.word if inflected else word               # если не вышло — оригинал
 
 
-def _generate_inflected(original: str, tag_name: str) -> str:
-    """Генерирует имя или фамилию с сохранением рода, числа, падежа.
+def _find_parse_with_tag(word: str, tag_name: str):
+    """Первый разбор pymorphy с тегом tag_name (Name/Surn/Patr)."""
+    for p in morph.parse(word):
+        if tag_name in p.tag:
+            return p
+    return None
 
-    tag_name: «Name» — для имён, «Surn» — для фамилий.
-    Пробует до MAX_NAME_GEN_ATTEMPTS раз: Faker даёт слово в именительном,
-    проверяем что pymorphy видит его как ФИО, склоняем к целевой форме,
-    проверяем что результат снова разбирается как ФИО и с нужным падежом.
-    Если все попытки неудачны — возвращает оригинал.
+
+def get_grammemes(word: str) -> Dict[str, Optional[str]]:
+    """Род, число и падеж слова (приоритет — разбору как ФИО)."""
+    parses = morph.parse(word)
+    if not parses:
+        return {"gender": "masc", "number": "sing", "case": "nomn"}
+    chosen = parses[0]
+    for p in parses:
+        if any(t in p.tag for t in ("Name", "Surn", "Patr")):
+            chosen = p
+            break
+    tag = chosen.tag
+    return {
+        "gender": tag.gender or "masc",
+        "number": tag.number or "sing",
+        "case":   tag.case   or "nomn",
+    }
+
+
+def _lemma(word: str, attr: str) -> str:
+    """Нормальная форма для кэша однокоренных.
+
+    Для SURNAME приводим к мужской форме им.п. — чтобы «Иванов», «Иванова»,
+    «Ивановой» имели одну лемму «иванов». Для NAME — normal_form в роде
+    оригинала (Иван → иван, Мария → мария).
     """
-    gr = get_grammemes(original)                               # граммемы оригинала
-    target = {g for g in (gr["case"], gr["number"]) if g}      # целевые число и падеж
-    for _ in range(MAX_NAME_GEN_ATTEMPTS):                     # ограниченное число попыток
-        if tag_name == "Name":                                 # генерируем имя
-            raw = fake.first_name_female() if gr["gender"] == "femn" else fake.first_name_male()
-        else:                                                  # генерируем фамилию
-            raw = fake.last_name_female() if gr["gender"] == "femn" else fake.last_name_male()
-        parse = _find_parse_with_tag(raw, tag_name)            # Faker дал слово нужного типа?
-        if parse is None:
-            continue                                           # не подошло — следующая попытка
-        if parse.tag.case not in (None, "nomn"):               # Faker должен давать именительный
-            continue
-        inflected = parse.inflect(target)                      # склоняем к целевой форме
-        if inflected is None:                                  # не склоняется — пропускаем
-            continue
-        result_parse = _find_parse_with_tag(inflected.word, tag_name)  # результат снова ФИО?
-        if result_parse is None:
-            continue
-        if gr["case"] and result_parse.tag.case != gr["case"]: # падеж результата совпадает?
-            continue
-        return inflected.word                                  # всё ок — возвращаем
-    return original                                            # 200 попыток не помогли — оригинал
+    parses = morph.parse(word)
+    if not parses:
+        return word.lower()
+    chosen = None
+    for p in parses:                                           # ищем разбор как ФИО
+        if attr == "SURNAME" and "Surn" in p.tag:
+            chosen = p
+            break
+        if attr == "NAME" and "Name" in p.tag:
+            chosen = p
+            break
+    if chosen is None:                                         # не нашли — берём первый
+        chosen = parses[0]
+    if attr == "SURNAME":                                      # для фамилий — мужская база
+        masc = chosen.inflect({"masc", "nomn"})
+        if masc:
+            return masc.word.lower()
+    return chosen.normal_form.lower()
 
 
-def generate_name_with_morphology(original: str) -> str:
-    """Случайное имя с сохранением рода, числа и падежа («Ивана» → «Петра»)."""
-    return _generate_inflected(original, "Name")
+def _generate_normal_fio(attr: str, grammemes: Dict[str, Optional[str]]) -> str:
+    """Генерирует новое слово в нормальной форме.
+
+    Для SURNAME — всегда мужская форма им.п. (Петров). При замене склоняем
+    к роду/падежу оригинала. Для NAME — в роде оригинала (Мария → Анна).
+    """
+    if attr == "SURNAME":
+        return fake.last_name_male()
+    if grammemes.get("gender") == "femn":
+        return fake.first_name_female()
+    return fake.first_name_male()
 
 
-def generate_surname_with_morphology(original: str) -> str:
-    """Случайная фамилия с сохранением рода, числа и падежа («Ивановой» → «Петровой»)."""
-    return _generate_inflected(original, "Surn")
-
+def _inflect_new(new_normal: str, original: str) -> str:
+    """Склоняет новое слово к граммам оригинала (род/число/падеж)."""
+    grammemes = get_grammemes(original)
+    target = {g for g in (grammemes.get("gender"),
+                          grammemes.get("number"),
+                          grammemes.get("case")) if g}
+    if not target:
+        return new_normal.title()
+    parses = morph.parse(new_normal)
+    if not parses:
+        return new_normal.title()
+    inflected = parses[0].inflect(target)
+    return inflected.word.title() if inflected else new_normal.title()
 
 # ========== ОБЕЗЛИЧИВАНИЕ СТРУКТУРИРОВАННЫХ АТРИБУТОВ ==========
 def obfuscate_email(email: str) -> str:
@@ -257,70 +282,82 @@ def obfuscate_kladr(kladr: str) -> str:
 
 # ========== ГЛАВНАЯ ФУНКЦИЯ anon() ==========
 def _obfuscate_value(attr: str, value: str) -> str:
-    """Диспетчер: для каждого атрибута из ATTRS — своя функция обезличивания."""
+    """Диспетчер для структурированных атрибутов (ФИО — отдельно в anon)."""
     dispatch = {
-        "SURNAME":     generate_surname_with_morphology,   # морфология
-        "NAME":        generate_name_with_morphology,      # морфология
-        "EMAIL":       obfuscate_email,                    # домен
-        "INN":         obfuscate_inn,                      # 4 + контроль
-        "CREDIT_CARD": obfuscate_credit_card,              # 6+4 + Луна
-        "PASSPORT":    obfuscate_passport,                 # серия
-        "OGRNIP":      obfuscate_ogrnip,                   # 4 + контроль
-        "IP":          obfuscate_ip,                       # сеть
-        "BIRTH_CERT":  obfuscate_birth_cert,               # серия
-        "KLADR":       obfuscate_kladr,                    # регион
+        "EMAIL":       obfuscate_email,
+        "INN":         obfuscate_inn,
+        "CREDIT_CARD": obfuscate_credit_card,
+        "PASSPORT":    obfuscate_passport,
+        "OGRNIP":      obfuscate_ogrnip,
+        "IP":          obfuscate_ip,
+        "BIRTH_CERT":  obfuscate_birth_cert,
+        "KLADR":       obfuscate_kladr,
     }
     func = dispatch.get(attr)
     return func(value) if func else value
 
 
 def anon(text: str, entities: List[Tuple[str, int, int]]) -> str:
-    """Обезличивает ПДн в тексте по списку сущностей.
+    """Обезличивает ПДн с идемпотентностью и однокоренными заменами.
 
-    text     — исходный текст;
-    entities — список (ATTR, start, end) в символьных индексах.
-
-    Крайние случаи:
-      * пустой текст/список — возвращает текст как есть;
-      * некорректные индексы — сущность пропускается;
-      * перекрывающиеся сущности — оставляется первая (по start);
-      * неизвестный тип атрибута — значение остаётся без замены;
-      * исключение внутри обфускатора — логируется, значение не меняется.
+    Идемпотентность: одинаковые сущности → одинаковые замены (кэш).
+    Однокоренные: «Иванов», «Иванова», «Ивановой» → «Петров», «Петрова»,
+    «Петровой» (одна лемма → одно новое слово, разные падежные формы).
+    Кэш живёт в рамках одного вызова — между вызовами значения разные.
     """
-    if not text or not entities:                               # нечего обезличивать
+    if not text or not entities:
         return text
-    valid = []                                                 # прошедшие фильтр сущности
-    for e in entities:                                         # проверяем каждую сущность
-        if not (isinstance(e, (tuple, list)) and len(e) == 3): # должен быть кортеж из 3 элементов
+
+    # --- Фильтрация валидных сущностей ---
+    valid = []
+    for e in entities:
+        if not (isinstance(e, (tuple, list)) and len(e) == 3):
             continue
-        attr, start, end = e                                   # распаковка
-        if not (isinstance(attr, str) and isinstance(start, int) and isinstance(end, int)):  # типы верные?
+        attr, start, end = e
+        if not (isinstance(attr, str) and isinstance(start, int) and isinstance(end, int)):
             continue
-        if start < 0 or end > len(text) or start >= end:       # индексы в пределах текста?
+        if start < 0 or end > len(text) or start >= end:
             continue
         valid.append((attr, start, end))
-    valid.sort(key=lambda x: x[1])                             # сортировка по началу
-    filtered = []                                              # без перекрытий
-    last_end = 0                                               # конец последней принятой
+
+    # --- Сортировка и удаление перекрытий ---
+    valid.sort(key=lambda x: x[1])
+    filtered = []
+    last_end = 0
     for attr, start, end in valid:
-        if start < last_end:                                   # начинается до конца предыдущей
-            continue                                           # перекрытие — пропускаем
+        if start < last_end:
+            continue
         filtered.append((attr, start, end))
         last_end = end
-    parts = []                                                 # куски нового текста
-    prev = 0                                                   # текущая позиция в оригинале
+
+    # --- Кэш замен (идемпотентность + однокоренные) ---
+    cache: Dict[Tuple[str, str], str] = {}
+    parts = []
+    prev = 0
     for attr, start, end in filtered:
-        parts.append(text[prev:start])                         # кусок до сущности
-        original = text[start:end]                             # оригинальное значение
+        parts.append(text[prev:start])
+        original = text[start:end]
         try:
-            replaced = _obfuscate_value(attr, original)        # обезличиваем
-        except Exception as exc:                               # ошибка внутри обфускатора
-            print(f"⚠ Ошибка при обезличивании {attr}='{original}': {exc}")  # логируем
-            replaced = original                                # оставляем как есть
-        parts.append(replaced)                                 # вставляем замену
-        prev = end                                             # сдвигаем курсор
-    parts.append(text[prev:])                                  # хвост после последней сущности
-    return "".join(parts)                                      # склеиваем в строку
+            if attr in ("SURNAME", "NAME"):
+                # ключ — по лемме: «Иванов» и «Иванова» → одна замена
+                lemma = _lemma(original, attr)
+                key = (attr, lemma)
+                if key not in cache:
+                    cache[key] = _generate_normal_fio(attr, get_grammemes(original))
+                replaced = _inflect_new(cache[key], original)   # склоняем к падежу оригинала
+            else:
+                # ключ — по точному значению: два одинаковых ИНН → один новый
+                key = (attr, original)
+                if key not in cache:
+                    cache[key] = _obfuscate_value(attr, original)
+                replaced = cache[key]
+        except Exception as exc:
+            print(f"⚠ Ошибка при обезличивании {attr}='{original}': {exc}")
+            replaced = original
+        parts.append(replaced)
+        prev = end
+    parts.append(text[prev:])
+    return "".join(parts)
 
 
 # ========== СКВОЗНОЙ ПАЙПЛАЙН ==========
