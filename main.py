@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (
     MODEL_OUT, RETRAIN, SKIP_TEST,
-    THRESHOLD_WEIGHTED_F1, THRESHOLD_MEAN_F1, MIN_TEST_DOCS, N_PER_ATTR,
+    THRESHOLD_WEIGHTED_F1, THRESHOLD_MEAN_F1, MIN_TEST_DOCS, N_PER_ATTR, DEMO_TEXT,
 )
 
 
@@ -126,6 +126,24 @@ def demo_pipeline():
     print(f"Запуск 2:\n{result2}")
 
 
+def anonymize_text(text: str):
+    """Принимает текст, возвращает (обезличенный текст, список сущностей).
+
+    Возвращает:
+        anonymized  — строка с обезличенными ПДн;
+        entities    — список (ATTR, start, end) в индексах исходного текста.
+    """
+    from recognize import predict
+    from anonymize import anon
+
+    if not text or not text.strip():                     # пустой текст — нечего делать
+        return text, []
+
+    entities = predict(text)                             # список (ATTR, start, end) в исходном тексте
+    anonymized = anon(text, entities)                    # обезличенный текст
+    return anonymized, entities
+
+
 # ========== MAIN ==========
 if __name__ == "__main__":
     # --- Загрузка данных (один раз) ---
@@ -155,5 +173,11 @@ if __name__ == "__main__":
         print("Оценка пропускается")
 
     # --- Демонстрация (всегда) ---
-    demo_recognition()                                       # predict
-    demo_pipeline()                                          # recognize_and_anonymize
+    # demo_recognition()                                       # predict
+    # demo_pipeline()                                          # recognize_and_anonymize
+
+        # --- Формат из ТЗ КР: текст → (обезличенный текст, список сущностей) ---
+    obfuscated, entities = anonymize_text(DEMO_TEXT)
+    print(f"\nВход:        {DEMO_TEXT!r}")
+    print(f"\nВыход:       {obfuscated!r}")
+    print(f"\nСущности:    {entities}")

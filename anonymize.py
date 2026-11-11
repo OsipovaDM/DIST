@@ -65,30 +65,27 @@ def get_grammemes(word: str) -> Dict[str, Optional[str]]:
 
 
 def _lemma(word: str, attr: str) -> str:
-    """Нормальная форма для кэша однокоренных.
-
-    Для SURNAME приводим к мужской форме им.п. — чтобы «Иванов», «Иванова»,
-    «Ивановой» имели одну лемму «иванов». Для NAME — normal_form в роде
-    оригинала (Иван → иван, Мария → мария).
-    """
+    """Нормальная форма для кэша однокоренных и связки имя↔фамилия"""
     parses = morph.parse(word)
     if not parses:
-        return word.lower()
+        return _normalize(word)                              # lower + ё→е
+
     chosen = None
-    for p in parses:                                           # ищем разбор как ФИО
+    for p in parses:                                         # ищем разбор как ФИО
         if attr == "SURNAME" and "Surn" in p.tag:
             chosen = p
             break
         if attr == "NAME" and "Name" in p.tag:
             chosen = p
             break
-    if chosen is None:                                         # не нашли — берём первый
+    if chosen is None:
         chosen = parses[0]
-    if attr == "SURNAME":                                      # для фамилий — мужская база
+
+    if attr == "SURNAME":                                    # для фамилий — муж. им.п.
         masc = chosen.inflect({"masc", "nomn"})
         if masc:
-            return masc.word.lower()
-    return chosen.normal_form.lower()
+            return _normalize(masc.word)                     # ← _normalize: lower + ё→е
+    return _normalize(chosen.normal_form)                    # ← _normalize для имён
 
 def _normalize(s: str) -> str:
     """lowercase + ё → е для сравнения лемм."""
@@ -155,6 +152,24 @@ def _inflect_new(new_normal: str, original: str, attr: str) -> str:
             return new_normal.title()                # inflect сломался — нормальная форма
 
     return result
+
+def _inflect_surname_by_pattern(new_normal: str, original: str) -> str:
+    """Склоняет фамилию по образцу оригинала
+    new_normal — новая фамилия в мужской форме им.п.
+    original   — оригинал в текущей форме 
+    """
+    orig_lemma = _lemma(original, "SURNAME")            # муж. им.п. оригинала
+    orig_lower = original.lower()                        # текущая форма
+
+    common = 0                                           # общий префикс лемма ↔ форма
+    for i in range(min(len(orig_lemma), len(orig_lower))):
+        if orig_lemma[i] == orig_lower[i]:
+            common += 1
+        else:
+            break
+    ending = orig_lower[common:]                         # окончание падежа
+
+    return (new_normal + ending).title()
 
 
 def _extract_name_from_surname(surname: str) -> list:
@@ -436,7 +451,7 @@ def anon(text: str, entities: List[Tuple[str, int, int]]) -> str:
                         cache[key] = _derive_surname_from_name(linked)  # Пётр → Петров
                     else:
                         cache[key] = _generate_normal_fio("SURNAME", get_grammemes(original))
-                replaced = _inflect_new(cache[key], original, "SURNAME")
+                replaced = _inflect_surname_by_pattern(cache[key], original)
 
             else:
                 key = (attr, original)
