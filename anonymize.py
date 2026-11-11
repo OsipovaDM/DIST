@@ -1,12 +1,12 @@
 """Обезличивание ПДн: морфология + замена + сквозной пайплайн"""
-import random
+import random, re
 from typing import List, Tuple, Dict, Optional
 
 import pymorphy3
 from faker import Faker
 
 from config import (
-    OBFUSCATABLE, EMAIL_ALPHABET, EMAIL_MIN_LOCAL_LEN, MAX_NAME_GEN_ATTEMPTS,
+    EMAIL_ALPHABET, EMAIL_MIN_LOCAL_LEN, MAX_NAME_GEN_ATTEMPTS,
     INN_COEFF_C11, INN_COEFF_C12, digits_only,
 )
 from recognize import predict, validate_luhn
@@ -137,21 +137,6 @@ def obfuscate_inn(inn: str) -> str:
     return "".join(next(it) if c.isdigit() else c for c in inn)  # вставляем на места цифр
 
 
-def obfuscate_phone(phone: str) -> str:
-    """Меняет все цифры кроме первых 4, сохраняя скобки, дефисы, пробелы."""
-    if not isinstance(phone, str):                             # не строка — не трогаем
-        return phone
-    digit_positions = [i for i, c in enumerate(phone) if c.isdigit()]  # позиции всех цифр
-    if len(digit_positions) < 5:                               # слишком короткий номер
-        return phone
-    fixed = set(digit_positions[:4])                           # индексы первых 4 цифр (сохраняем)
-    result = list(phone)                                       # копия строки как список символов
-    for pos in digit_positions:                                # проходим по всем цифрам
-        if pos not in fixed:                                   # не в префиксе — заменяем
-            result[pos] = str(rng.randint(0, 9))
-    return "".join(result)                                     # обратно в строку
-
-
 def obfuscate_credit_card(card: str) -> str:
     """Меняет средние 6 цифр карты, сохраняя BIN, последние 4 и валидный Луна.
 
@@ -179,19 +164,114 @@ def obfuscate_credit_card(card: str) -> str:
     return "".join(next(it) if c.isdigit() else c for c in card)  # вставляем на места цифр
 
 
+def obfuscate_passport(passport: str) -> str:
+    """Серия (4 цифры) сохраняется, номер (6 цифр) меняется.
+
+    Косвенный признак — серия паспорта (код региона + код подразделения)
+    остаётся прежней, меняется только номер. Разделители сохраняются.
+    """
+    if not isinstance(passport, str):
+        return passport
+    digits = digits_only(passport)
+    if len(digits) != 10:                                    # не паспорт — не трогаем
+        return passport
+    new_number = "".join(str(rng.randint(0, 9)) for _ in range(6))  # новые 6 цифр
+    new_digits = digits[:4] + new_number                     # серия + новый номер
+    it = iter(new_digits)                                    # вставляем на места цифр
+    return "".join(next(it) if c.isdigit() else c for c in passport)
+
+
+def obfuscate_ogrnip(ogrnip: str) -> str:
+    """Первые 4 цифры сохраняются, остальные 10 меняются, контроль пересчитывается.
+
+    Первые 2 цифры — признак и год регистрации ИП, ещё 2 — код региона.
+    Позиции 5–14 — случайные. Контрольная (15-я) считается по ФНС,
+    чтобы ОГРНИП остался валидным.
+    """
+    if not isinstance(ogrnip, str):
+        return ogrnip
+    digits = digits_only(ogrnip)
+    if len(digits) != 15:                                    # не ОГРНИП — не трогаем
+        return ogrnip
+    prefix = digits[:4]                                      # сохраняем 4 первые
+    middle = "".join(str(rng.randint(0, 9)) for _ in range(10))  # 10 случайных
+    first_14 = prefix + middle                               # 14 цифр для контроля
+    ctrl = (int(first_14) % 13) % 10                         # контрольная по ФНС
+    new_digits = first_14 + str(ctrl)
+    it = iter(new_digits)
+    return "".join(next(it) if c.isdigit() else c for c in ogrnip)
+
+
+def obfuscate_ip(ip: str) -> str:
+    """Первые 2 октета (сеть) сохраняются, последние 2 (хост) меняются.
+
+    Сохраняем префикс сети — это косвенный признак провайдера/региона.
+    Меняем только хостовую часть.
+    """
+    if not isinstance(ip, str):
+        return ip
+    parts = ip.split(".")
+    if len(parts) != 4:                                      # не IPv4 — не трогаем
+        return ip
+    try:
+        int(parts[0]); int(parts[1])                         # проверяем что это числа
+    except ValueError:
+        return ip
+    new_p3 = rng.randint(1, 254)                             # новый 3-й октет
+    new_p4 = rng.randint(1, 254)                             # новый 4-й октет
+    return f"{parts[0]}.{parts[1]}.{new_p3}.{new_p4}"
+
+
+def obfuscate_birth_cert(cert: str) -> str:
+    """Серия (римская) и код субъекта сохраняются, номер (6-7 цифр) меняется.
+
+    Косвенные признаки — римская серия (I–XV) и код субъекта (АК, МЮ, …)
+    остаются. Меняется только числовой номер в конце.
+    """
+    if not isinstance(cert, str):
+        return cert
+    matches = list(re.finditer(r"\d{6,7}", cert))            # ищем группы 6-7 цифр
+    if not matches:                                          # не свидетельство — не трогаем
+        return cert
+    m = matches[-1]                                          # последняя группа — номер
+    new_num = "".join(str(rng.randint(0, 9)) for _ in range(len(m.group(0))))
+    return cert[:m.start()] + new_num + cert[m.end():]       # серия остаётся нетронутой
+
+
+def obfuscate_kladr(kladr: str) -> str:
+    """Код региона (первые 2 цифры) сохраняется, остальные цифры меняются.
+
+    Косвенный признак — регион. Остальные уровни (район, город, улица)
+    генерируются случайно. КЛАДР пишется без разделителей, поэтому
+    просто склеиваем регион + случайные цифры.
+    """
+    if not isinstance(kladr, str):
+        return kladr
+    digits = digits_only(kladr)
+    if len(digits) not in (13, 17):                          # не КЛАДР — не трогаем
+        return kladr
+    region = digits[:2]                                      # код региона сохраняем
+    rest = "".join(str(rng.randint(0, 9)) for _ in range(len(digits) - 2))
+    return region + rest
+
+
 # ========== ГЛАВНАЯ ФУНКЦИЯ anon() ==========
 def _obfuscate_value(attr: str, value: str) -> str:
-    """Диспетчер: вызывает нужный обфускатор по типу атрибута."""
-    dispatch = {                                               # таблица «тип → функция»
-        "SURNAME":     generate_surname_with_morphology,
-        "NAME":        generate_name_with_morphology,
-        "EMAIL":       obfuscate_email,
-        "INN":         obfuscate_inn,
-        "PHONE":       obfuscate_phone,
-        "CREDIT_CARD": obfuscate_credit_card,
+    """Диспетчер: для каждого атрибута из ATTRS — своя функция обезличивания."""
+    dispatch = {
+        "SURNAME":     generate_surname_with_morphology,   # морфология
+        "NAME":        generate_name_with_morphology,      # морфология
+        "EMAIL":       obfuscate_email,                    # домен
+        "INN":         obfuscate_inn,                      # 4 + контроль
+        "CREDIT_CARD": obfuscate_credit_card,              # 6+4 + Луна
+        "PASSPORT":    obfuscate_passport,                 # серия
+        "OGRNIP":      obfuscate_ogrnip,                   # 4 + контроль
+        "IP":          obfuscate_ip,                       # сеть
+        "BIRTH_CERT":  obfuscate_birth_cert,               # серия
+        "KLADR":       obfuscate_kladr,                    # регион
     }
-    func = dispatch.get(attr)                                  # ищем функцию для типа
-    return func(value) if func else value                      # нет функции — оставляем как есть
+    func = dispatch.get(attr)
+    return func(value) if func else value
 
 
 def anon(text: str, entities: List[Tuple[str, int, int]]) -> str:
@@ -245,13 +325,12 @@ def anon(text: str, entities: List[Tuple[str, int, int]]) -> str:
 
 # ========== СКВОЗНОЙ ПАЙПЛАЙН ==========
 def recognize_and_anonymize(text: str) -> str:
-    """Полный цикл: predict() → фильтр OBFUSCATABLE → anon().
+    """Полный цикл: predict() → anon(). Обезличиваются все распознанные атрибуты.
 
-    Пример: «Иванов Иван, ivan@mail.ru» → «Петрова Мария, k3j9x7@mail.ru».
-    Атрибуты, не входящие в OBFUSCATABLE (паспорт, ОГРНИП и т.п.),
-    остаются в тексте нетронутыми.
+    Список поддерживаемых атрибутов = ATTRS. Отдельного OBFUSCATABLE
+    больше нет — все, что распознано, обезличивается.
     """
-    if not text or not text.strip():                           # пусто — возвращаем как есть
+    if not text or not text.strip():
         return text
-    ents = [e for e in predict(text) if e[0] in OBFUSCATABLE]  # только обезличиваемые
-    return anon(text, ents) if ents else text                  # замена или оригинал, если нечего
+    ents = predict(text)                                     # все распознанные сущности
+    return anon(text, ents) if ents else text

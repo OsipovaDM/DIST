@@ -215,6 +215,13 @@ def model_entities(text: str) -> List[Tuple[str, int, int]]:
             abs_start = char_start + int(ent["start"])  # абсолютное начало в исходном тексте
             abs_end = char_start + int(ent["end"])      # абсолютный конец
             key = (label, abs_start, abs_end)         # ключ для дедупликации
+            # --- Обрезаем пунктуацию и пробелы с краёв спана ---
+            while abs_start < abs_end and not text[abs_start].isalnum():
+                abs_start += 1
+            while abs_end > abs_start and not text[abs_end - 1].isalnum():
+                abs_end -= 1
+            if abs_start >= abs_end:                    # после обрезки пусто — пропускаем
+                continue
             if key in seen:                           # уже видели в другом чанке
                 continue
             seen.add(key)

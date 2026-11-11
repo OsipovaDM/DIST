@@ -70,85 +70,55 @@ def run_evaluation(factrueval_test_docs) -> dict:
 
 # ========== ДЕМОНСТРАЦИЯ РАСПОЗНАВАНИЯ ==========
 def demo_recognition():
-    """Показывает распознавание на тех же шаблонах, что в тестировании.
+    """Показывает распознавание на одном тексте со всеми атрибутами и форматами.
 
-    Генерирует по DEMO_SAMPLES_PER_ATTR примеров на каждый атрибут через
-    ту же _build_test_texts(), что и evaluate(). При DEMO_SAMPLES_PER_ATTR=3
-    покажет все форматы разделителей (compact/space/dash) и все шаблоны.
+    В DEMO_TEXT встречается каждый из 10 атрибутов во всех поддерживаемых
+    форматах: слитно, через пробел, через дефис, смешанный.
     """
+    from collections import defaultdict
     from recognize import predict
-    from evaluation import _build_test_texts
-    from config import DEMO_SAMPLES_PER_ATTR
+    from config import DEMO_TEXT, ATTRS
 
     print("\n" + "=" * 60)
-    print(f"ДЕМОНСТРАЦИЯ: распознавание ПДн (по {DEMO_SAMPLES_PER_ATTR} примеру на атрибут)")
+    print("ДЕМОНСТРАЦИЯ: распознавание ПДн (все атрибуты, все форматы)")
     print("=" * 60)
+    print(f"\nИсходный текст ({len(DEMO_TEXT)} символов):\n{DEMO_TEXT}")
 
-    test_texts = _build_test_texts(DEMO_SAMPLES_PER_ATTR)   # те же генераторы, что в evaluate
+    entities = predict(DEMO_TEXT)                                # распознавание
+    print(f"\nНайдено сущностей: {len(entities)}")
 
-    # Группируем по атрибуту — чтобы вывод был по разделам
-    by_attr = {}
-    for text, attr, value in test_texts:
-        by_attr.setdefault(attr, []).append((text, value))
+    by_attr = defaultdict(list)                                  # группируем по атрибуту
+    for attr, s, e in entities:
+        by_attr[attr].append(DEMO_TEXT[s:e])
 
-    for attr, samples in by_attr.items():
-        print(f"\n--- {attr} ---")
-        for text, expected in samples:
-            entities = predict(text)
-            # Проверяем, нашёлся ли ожидаемый атрибут
-            found = any(e_attr == attr for e_attr, _, _ in entities)
-            mark = "✅" if found else "❌"
-            print(f"{mark} {text}")
-            print(f"   ожидалось: {attr}='{expected}'")
-            if entities:
-                for e_attr, s, e in entities:
-                    print(f"   найдено:   {e_attr}='{text[s:e]}' [{s}:{e}]")
-            else:
-                print("   найдено:   (ничего)")
-
-
-# ========== ДЕМОНСТРАЦИЯ ОБЕЗЛИЧИВАНИЯ ==========
-def demo_anonymization():
-    """Показывает синонимическую замену по готовому списку сущностей."""
-    from anonymize import anon                               # импорт здесь — не тянет pymorphy при import main
-    print("\n" + "=" * 60)
-    print("ДЕМОНСТРАЦИЯ: обезличивание по готовому списку сущностей")
-    print("=" * 60)
-
-    samples = [
-        ("Иван получил кредит.", [("NAME", 0, 4)]),          # простое имя
-        ("Иванов Иван, ivan@mail.ru.", [("SURNAME", 0, 6), ("NAME", 7, 11), ("EMAIL", 13, 25)]),
-        ("ИНН 770698959438, карта 4561 2612 1234 5467.",
-         [("INN", 4, 16), ("CREDIT_CARD", 24, 43)]),
-        ("Позвоните Петровой Марии.", [("SURNAME", 10, 18), ("NAME", 19, 24)]),  # падежи
-    ]
-    for text, entities in samples:
-        anonymized = anon(text, entities)                    # замена
-        print(f"\nБыло:  {text}")
-        print(f"Стало: {anonymized}")
-        # Второй вызов — проверка случайности
-        anonymized2 = anon(text, entities)
-        print(f"Ещё:   {anonymized2}  {'(≠ первого)' if anonymized2 != anonymized else '⚠ совпало'}")
+    print("\nПо атрибутам:")
+    for attr in ATTRS:
+        if attr in by_attr:
+            vals = by_attr[attr]
+            print(f"  {attr:<14} ({len(vals)}): {vals}")
+        else:
+            print(f"  {attr:<14} (0):   ⚠ не найдено")
 
 
 # ========== ДЕМОНСТРАЦИЯ СКВОЗНОГО ЦИКЛА ==========
 def demo_pipeline():
-    """Показывает полный цикл: распознать → отфильтровать → обезличить."""
-    from anonymize import recognize_and_anonymize            # импорт здесь — ленивая загрузка BERT
+    """Сквозной цикл на демонстрационном тексте: распознать → обезличить."""
+    from anonymize import recognize_and_anonymize
+    from config import DEMO_TEXT
+
     print("\n" + "=" * 60)
     print("ДЕМОНСТРАЦИЯ: сквозной цикл (распознавание + обезличивание)")
     print("=" * 60)
+    print(f"\nБыло:\n{DEMO_TEXT}\n")
 
-    samples = [
-        "Иванов Иван, почта ivan.petrov@example.ru.",
-        "ИНН 770698959438, карта 4561 2612 1234 5467.",
-        # Паспорт и ОГРНИП НЕ в OBFUSCATABLE — должны остаться
-        "Паспорт 45 06 123456, ОГРНИП 304500116000157.",
-        "Петрова Мария, petrova@corp.ru, ИНН 500100732259.",
-    ]
-    for text in samples:
-        print(f"\nБыло:  {text}")
-        print(f"Стало: {recognize_and_anonymize(text)}")
+    anonymized = recognize_and_anonymize(DEMO_TEXT)
+    print(f"Стало:\n{anonymized}\n")
+
+    # Второй вызов — проверка случайности (значения должны отличаться)
+    anonymized2 = recognize_and_anonymize(DEMO_TEXT)
+    print(f"Повторный вызов (проверка случайности):\n{anonymized2}")
+    same = anonymized == anonymized2
+    print(f"\n{'⚠ ВНИМАНИЕ: повторный вызов дал тот же результат' if same else '✅ Значения разные — случайность работает'}")
 
 
 # ========== MAIN ==========
@@ -181,7 +151,6 @@ if __name__ == "__main__":
 
     # --- Демонстрация (всегда) ---
     demo_recognition()                                       # predict
-    demo_anonymization()                                     # anon
     demo_pipeline()                                          # recognize_and_anonymize
 
     print("\n" + "=" * 60)
