@@ -70,28 +70,41 @@ def run_evaluation(factrueval_test_docs) -> dict:
 
 # ========== ДЕМОНСТРАЦИЯ РАСПОЗНАВАНИЯ ==========
 def demo_recognition():
-    """Показывает, что находит predict() в разных текстах."""
-    from recognize import predict                            # ленивый импорт — BERT грузится при первом вызове
+    """Показывает распознавание на тех же шаблонах, что в тестировании.
+
+    Генерирует по DEMO_SAMPLES_PER_ATTR примеров на каждый атрибут через
+    ту же _build_test_texts(), что и evaluate(). При DEMO_SAMPLES_PER_ATTR=3
+    покажет все форматы разделителей (compact/space/dash) и все шаблоны.
+    """
+    from recognize import predict
+    from evaluation import _build_test_texts
+    from config import DEMO_SAMPLES_PER_ATTR
+
     print("\n" + "=" * 60)
-    print("ДЕМОНСТРАЦИЯ: распознавание ПДн")
+    print(f"ДЕМОНСТРАЦИЯ: распознавание ПДн (по {DEMO_SAMPLES_PER_ATTR} примеру на атрибут)")
     print("=" * 60)
 
-    samples = [
-        "Иванов Иван, почта ivan.petrov@example.ru.",
-        "ИНН компании: 770698959438, ОГРНИП 304500116000157.",
-        "Карта 4561 2612 1234 5467, паспорт 45 06 123456.",
-        "IP-адрес 192.168.1.100, КЛАДР 7700000000000.",
-        "Свидетельство о рождении IV-МЮ 123456.",
-        "Тут нет персональных данных вообще.",               # проверка на «нет ПДн»
-    ]
-    for text in samples:
-        entities = predict(text)                             # распознавание
-        print(f"\n📄 {text}")
-        if not entities:
-            print("   (ничего не найдено)")
-            continue
-        for attr, s, e in entities:                          # печать найденных сущностей
-            print(f"   {attr:<12} '{text[s:e]}'  [{s}:{e}]")
+    test_texts = _build_test_texts(DEMO_SAMPLES_PER_ATTR)   # те же генераторы, что в evaluate
+
+    # Группируем по атрибуту — чтобы вывод был по разделам
+    by_attr = {}
+    for text, attr, value in test_texts:
+        by_attr.setdefault(attr, []).append((text, value))
+
+    for attr, samples in by_attr.items():
+        print(f"\n--- {attr} ---")
+        for text, expected in samples:
+            entities = predict(text)
+            # Проверяем, нашёлся ли ожидаемый атрибут
+            found = any(e_attr == attr for e_attr, _, _ in entities)
+            mark = "✅" if found else "❌"
+            print(f"{mark} {text}")
+            print(f"   ожидалось: {attr}='{expected}'")
+            if entities:
+                for e_attr, s, e in entities:
+                    print(f"   найдено:   {e_attr}='{text[s:e]}' [{s}:{e}]")
+            else:
+                print("   найдено:   (ничего)")
 
 
 # ========== ДЕМОНСТРАЦИЯ ОБЕЗЛИЧИВАНИЯ ==========

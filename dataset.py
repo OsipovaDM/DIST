@@ -149,14 +149,4 @@ def load_factrueval() -> Tuple[List[Tuple[List[str], List[str]]],
         factrueval_test_docs = [d for d in (rec_to_test_doc(r) for r in dev_for_test) if d[1]]  # gold-спаны
         examples = [rec_to_example(r) for r in dev_records if _rec_tokens(r)]  # пересобираем train
 
-    if not any(l != "O" for _, labs in examples for l in labs):     # devset без единой сущности
-        MANUAL = [                                                  # ручной fallback — минимальный сигнал
-            ("Петров Иван пришёл.",         ["B-SURNAME", "B-NAME", "O"]),
-            ("Сидорова Мария ушла.",        ["B-SURNAME", "B-NAME", "O"]),
-            ("Иванов Пётр написал письмо.", ["B-SURNAME", "B-NAME", "O", "O"]),
-            ("Екимова Александра — юрист.", ["B-SURNAME", "B-NAME", "O", "O"]),
-            ("Дмитрий Медведев выступил.",  ["B-NAME", "B-SURNAME", "O"]),
-        ]
-        examples = [(t.split(), l) for t, l in MANUAL]              # (list[str], list[str])
-
     return examples, factrueval_test_docs                           # кортеж из двух списков

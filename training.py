@@ -8,26 +8,17 @@ import torch
 from datasets import Dataset as HFDataset, DatasetDict, Features, Sequence, Value, ClassLabel
 from transformers import (
     AutoTokenizer, AutoModelForTokenClassification,
-    TrainingArguments, Trainer, DataCollatorForTokenClassification, TrainerCallback,                                 
+    TrainingArguments, Trainer, DataCollatorForTokenClassification,                                 
 )
 
 from config import (
     BASE_MODEL, NUM_EPOCHS, BATCH_SIZE, LR, WEIGHT_DECAY,
     WARMUP_RATIO, LR_SCHEDULER_TYPE, LOGGING_STEPS, SAVE_TOTAL_LIMIT,
     DATALOADER_NUM_WORKERS, REPORT_TO, METRIC_FOR_BEST_MODEL, VALID_SIZE,
-    MAX_LEN, SEED,  BERT_LABELS, BERT_LABEL2ID, BERT_ID2LABEL, MODEL_OUT, TARGET_F1,
+    MAX_LEN, SEED,  BERT_LABELS, BERT_LABEL2ID, BERT_ID2LABEL, MODEL_OUT,
 )
 
-_seqeval = None   # кэш метрики seqeval (загружаем при первом compute_metrics)
-
-
-def _get_seqeval():
-    """Ленивая загрузка seqeval — чтобы import training не тянул сеть и evaluate."""
-    global _seqeval
-    if _seqeval is None:                                      # ещё не загружали
-        _seqeval = evaluate.load("seqeval")                   # скачает/закэширует метрику
-    return _seqeval
-
+seqeval = evaluate.load("seqeval")
 
 # ========== ОБЁРТКА examples → HF DATASET ==========
 def to_hf(examples):
@@ -98,7 +89,7 @@ def compute_metrics(eval_pred):
                  for pred, lab in zip(preds, labels)]         # предсказания без -100
     true_lab  = [[BERT_LABELS[l] for p, l in zip(pred, lab) if l != -100]
                  for pred, lab in zip(preds, labels)]         # истина без -100
-    res = _get_seqeval().compute(
+    res = seqeval().compute(
         predictions=true_pred, references=true_lab,
         zero_division=0, scheme="IOB2",                       # стандартная схема BIO
     )
@@ -108,35 +99,6 @@ def compute_metrics(eval_pred):
         "f1":        res["overall_f1"],
         "accuracy":  res["overall_accuracy"],
     }
-
-
-# ========== КОЛБЭК ОСТАНОВКИ ПО F1 ==========
-class StopAtF1Callback(TrainerCallback):
-    """Останавливает обучение, как только eval_f1 ≥ target_f1.
-
-    Вызывается после каждой валидации (on_evaluate). Сравнивает текущее
-    значение eval_f1 с порогом и, если достигли, ставит should_training_stop.
-    Модель при этом всё равно откатится к лучшей эпохе через
-    load_best_model_at_end=True, так что даже если F1 «перескочил» на
-    следующей эпохе — вы получите пиковую.
-
-    Если target_f1=None — колбэк не делает ничего (обучение идёт все NUM_EPOCHS).
-    Если F1 не достигнут — обучение идёт все NUM_EPOCHS (это не ошибка,
-    просто модель не смогла выйти на порог).
-    """
-    def __init__(self, target_f1):
-        self.target_f1 = target_f1
-
-    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        """Вызывается после evaluation на valid."""
-        if self.target_f1 is None:                       # порог не задан — ничего не делаем
-            return
-        current_f1 = (metrics or {}).get("eval_f1")      # достаём F1 из метрик
-        if current_f1 is None:                           # метрика не посчиталась
-            return
-        if current_f1 >= self.target_f1:                 # достигли порога
-            print(f"\n🛑 eval_f1 = {current_f1:.4f} ≥ {self.target_f1} — остановка на эпохе {state.epoch:.0f}")
-            control.should_training_stop = True          # сигнал Trainer'у — стоп
 
 
 # ========== ОБУЧЕНИЕ МОДЕЛИ ==========
@@ -212,7 +174,6 @@ def train_model(examples, model_out=MODEL_OUT):
         eval_dataset=tok_ds["valid"],
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[StopAtF1Callback(TARGET_F1)], 
         **{tok_key: tokenizer},
     )
 

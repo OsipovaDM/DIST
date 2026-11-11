@@ -7,7 +7,7 @@ from faker import Faker
 
 from config import (
     ATTRS, N_PER_ATTR, PASSPORT_REGION_WHITELIST,
-    digits_only,
+    digits_only, MANUAL_TEMPLATES,
 )
 from recognize import (
     predict,
@@ -18,86 +18,88 @@ from recognize import (
 fake_ru = Faker("ru_RU")   # генератор русских имён/фамилий/email
 
 # ========== ШАБЛОНЫ И ГЕНЕРАТОРЫ ==========
-MANUAL_TEMPLATES = {
-    "SURNAME":     ["{SURNAME} пришёл на встречу.", "Мы позвонили {SURNAME_OBL}."],  # + винительный
-    "NAME":        ["{NAME} написал письмо.",       "Передайте привет {NAME}."],     # именительный
-    "EMAIL":       ["Пишите на {EMAIL} до пятницы.",   "Резервный адрес: {EMAIL}."],
-    "INN":         ["ИНН компании: {INN}.",            "Укажите ИНН {INN} в декларации."],
-    "CREDIT_CARD": ["Оплата на карту {CARD}.",         "Реквизиты: {CARD}."],
-    "PASSPORT":    ["Паспорт: {PASSPORT}.",            "Серия и номер: {PASSPORT}."],
-    "OGRNIP":      ["ОГРНИП: {OGRNIP}.",               "Регистрация ИП: {OGRNIP}."],
-    "IP":          ["IP-адрес сервера: {IP}.",         "Соединение с {IP}."],
-    "BIRTH_CERT":  ["Свидетельство о рождении: {BIRTH_CERT}.", "Выдан документ {BIRTH_CERT}."],
-    "KLADR":       ["Код КЛАДР: {KLADR}.",             "Адрес по КЛАДР: {KLADR}."],
-}
-
-
-def gen_inn() -> str:
-    """Случайный валидный 12-значный ИНН (контроль по алгоритму ФНС)."""
-    while True:                                                # пока не получим валидный
-        base = [random.randint(0, 9) for _ in range(10)]       # 10 случайных цифр
-        c11 = [7, 2, 4, 10, 3, 5, 9, 4, 6, 8]                  # коэффициенты 11-й
-        n11 = (sum(base[i] * c11[i] for i in range(10)) % 11) % 10
-        d11 = base + [n11]                                     # 11 цифр
-        c12 = [3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]               # коэффициенты 12-й
-        n12 = (sum(d11[i] * c12[i] for i in range(11)) % 11) % 10
-        res = "".join(map(str, base + [n11, n12]))             # готовый ИНН
-        if validate_inn(res):                                  # проверка
-            return res
-
-
-def gen_card() -> str:
-    """Случайный валидный 16-значный номер карты (алгоритм Луна)."""
+def gen_inn(fmt: str = "compact") -> str:
+    """Случайный валидный ИНН. fmt: compact | space | dash."""
     while True:
-        body = "4" + "".join(str(random.randint(0, 9)) for _ in range(14))  # Visa, 15 цифр
-        for cd in range(10):                                   # подбираем 16-ю
+        base = [random.randint(0, 9) for _ in range(10)]
+        c11 = [7, 2, 4, 10, 3, 5, 9, 4, 6, 8]
+        n11 = (sum(base[i] * c11[i] for i in range(10)) % 11) % 10
+        d11 = base + [n11]
+        c12 = [3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]
+        n12 = (sum(d11[i] * c12[i] for i in range(11)) % 11) % 10
+        digits = "".join(map(str, base + [n11, n12]))
+        if validate_inn(digits):
+            break
+    if fmt == "space":
+        return f"{digits[:4]} {digits[4:7]} {digits[7:10]} {digits[10:]}"
+    if fmt == "dash":
+        return f"{digits[:4]}-{digits[4:7]}-{digits[7:10]}-{digits[10:]}"
+    return digits
+
+
+def gen_card(fmt: str = "compact") -> str:
+    """Случайный валидный номер карты. fmt: compact | space | dash."""
+    while True:
+        body = "4" + "".join(str(random.randint(0, 9)) for _ in range(14))
+        for cd in range(10):
             cand = body + str(cd)
             if validate_luhn(cand):
-                return cand
-
-
-def gen_passport() -> str:
-    """Паспорт с валидной серией; формат случайно из трёх."""
-    region = random.choice(sorted(PASSPORT_REGION_WHITELIST))  # валидный код региона
-    dept = random.randint(0, 99)                               # код подразделения
-    series = f"{region:02d}{dept:02d}"                         # серия 4 цифры
-    number = "".join(str(random.randint(0, 9)) for _ in range(6))  # номер 6 цифр
-    fmt = random.choice(["space", "dash", "compact"])          # один из трёх форматов
+                digits = cand
+                break
+        else:
+            continue
+        break
     if fmt == "space":
-        return f"{series[:2]} {series[2:]} {number}"           # «45 06 123456»
+        return f"{digits[:4]} {digits[4:8]} {digits[8:12]} {digits[12:]}"
     if fmt == "dash":
-        return f"{series[:2]}-{series[2:]}-{number}"           # «45-06-123456»
-    return series + number                                     # «4506123456»
+        return f"{digits[:4]}-{digits[4:8]}-{digits[8:12]}-{digits[12:]}"
+    return digits
 
 
-def gen_ogrnip() -> str:
-    """Случайный валидный ОГРНИП (15 цифр, контроль по ФНС)."""
+def gen_passport(fmt: str = "space") -> str:
+    """Случайный паспорт. fmt: compact | space | dash."""
+    region = random.choice(sorted(PASSPORT_REGION_WHITELIST))
+    dept = random.randint(0, 99)
+    series = f"{region:02d}{dept:02d}"
+    number = "".join(str(random.randint(0, 9)) for _ in range(6))
+    if fmt == "compact":
+        return series + number
+    if fmt == "dash":
+        return f"{series[:2]}-{series[2:]}-{number}"
+    return f"{series[:2]} {series[2:]} {number}"
+
+
+def gen_ogrnip(fmt: str = "compact") -> str:
+    """Случайный валидный ОГРНИП. fmt: compact | space | dash."""
     while True:
-        body = "3" + "".join(str(random.randint(0, 9)) for _ in range(13))  # первая цифра 3 (ИП)
-        ctrl = (int(body) % 13) % 10                           # контрольная цифра
-        res = body + str(ctrl)
-        if validate_ogrnip(res):
-            return res
-
+        body = "3" + "".join(str(random.randint(0, 9)) for _ in range(13))
+        ctrl = (int(body) % 13) % 10
+        digits = body + str(ctrl)
+        if validate_ogrnip(digits):
+            break
+    if fmt == "space":
+        return f"{digits[:3]} {digits[3:6]} {digits[6:9]} {digits[9:12]} {digits[12:]}"
+    if fmt == "dash":
+        return f"{digits[:3]}-{digits[3:6]}-{digits[6:9]}-{digits[9:12]}-{digits[12:]}"
+    return digits
 
 def gen_ip() -> str:
     """Случайный IPv4: 4 октета 1–254 (без 0 и 255 — служебные)."""
     return ".".join(str(random.randint(1, 254)) for _ in range(4))
 
 
-def gen_birth_cert() -> str:
-    """Свидетельство о рождении в одном из трёх форматов."""
+def gen_birth_cert(fmt: str = "plain") -> str:
+    """Свидетельство о рождении. fmt: plain | subj_space | subj_dash."""
     roman = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",
-             "XI", "XII", "XIII", "XIV", "XV"]                 # римские серии
-    series = random.choice(roman)                              # серия
-    num = "".join(str(random.randint(0, 9)) for _ in range(6)) # номер
-    fmt = random.choice(["plain", "subj_space", "subj_dash"])  # формат
-    subj = random.choice(["АК", "МЮ", "МК", "АБ", "БА", "ЮК"]) # код субъекта
-    if fmt == "plain":
-        return f"{series} {num}"                               # «IV 123456»
+             "XI", "XII", "XIII", "XIV", "XV"]
+    series = random.choice(roman)
+    num = "".join(str(random.randint(0, 9)) for _ in range(6))
+    subj = random.choice(["АК", "МЮ", "МК", "АБ", "БА", "ЮК"])
     if fmt == "subj_space":
-        return f"{series}-{subj} {num}"                        # «IV-МЮ 123456»
-    return f"{series}-{subj}-{num}"                            # «IV-МЮ-123456»
+        return f"{series}-{subj} {num}"
+    if fmt == "subj_dash":
+        return f"{series}-{subj}-{num}"
+    return f"{series} {num}"
 
 
 def gen_kladr() -> str:
@@ -164,6 +166,80 @@ def _find_span(text: str, value: str) -> Tuple[int, int]:
 
 
 # ========== ГЛАВНАЯ ФУНКЦИЯ ОЦЕНКИ ==========
+def _build_test_texts(n_per_attr: int) -> list:
+    """Строит тестовые тексты с покрытием ВСЕХ шаблонов и ВСЕХ форматов.
+
+    Для каждого атрибута генерируется n_per_attr текстов. Шаблоны
+    и форматы разделителей перебираются по кругу, чтобы каждый вариант
+    встретился примерно одинаковое число раз.
+    """
+    test_texts = []
+
+    # SURNAME NAME
+    for i in range(n_per_attr):
+        n = gen_name()                                              # имя
+        s = gen_surname()                                           # фамилия
+        tmpl = MANUAL_TEMPLATES["FIO"][i % len(MANUAL_TEMPLATES["FIO"])]
+        text = tmpl.format(NAME=n, SURNAME=s)                       # полное ФИО в контексте
+        test_texts.append((text, "SURNAME", s))                     # проверяем фамилию
+        test_texts.append((text, "NAME", n))                        # и имя в том же тексте
+
+    # EMAIL — один формат, все шаблоны
+    for i in range(n_per_attr):
+        tmpl = MANUAL_TEMPLATES["EMAIL"][i % len(MANUAL_TEMPLATES["EMAIL"])]
+        em = gen_email()
+        test_texts.append((tmpl.format(EMAIL=em), "EMAIL", em))
+
+    # INN — 3 формата × все шаблоны
+    for i in range(n_per_attr):
+        fmt = ["compact", "space", "dash"][i % 3]
+        tmpl = MANUAL_TEMPLATES["INN"][(i // 3) % len(MANUAL_TEMPLATES["INN"])]
+        inn = gen_inn(fmt=fmt)
+        test_texts.append((tmpl.format(INN=inn), "INN", inn))
+
+    # CREDIT_CARD — 3 формата × все шаблоны
+    for i in range(n_per_attr):
+        fmt = ["compact", "space", "dash"][i % 3]
+        tmpl = MANUAL_TEMPLATES["CREDIT_CARD"][(i // 3) % len(MANUAL_TEMPLATES["CREDIT_CARD"])]
+        cd = gen_card(fmt=fmt)
+        test_texts.append((tmpl.format(CARD=cd), "CREDIT_CARD", cd))
+
+    # PASSPORT — 3 формата × все шаблоны
+    for i in range(n_per_attr):
+        fmt = ["space", "dash", "compact"][i % 3]
+        tmpl = MANUAL_TEMPLATES["PASSPORT"][(i // 3) % len(MANUAL_TEMPLATES["PASSPORT"])]
+        pp = gen_passport(fmt=fmt)
+        test_texts.append((tmpl.format(PASSPORT=pp), "PASSPORT", pp))
+
+    # OGRNIP — 3 формата × все шаблоны
+    for i in range(n_per_attr):
+        fmt = ["compact", "space", "dash"][i % 3]
+        tmpl = MANUAL_TEMPLATES["OGRNIP"][(i // 3) % len(MANUAL_TEMPLATES["OGRNIP"])]
+        og = gen_ogrnip(fmt=fmt)
+        test_texts.append((tmpl.format(OGRNIP=og), "OGRNIP", og))
+
+    # IP — один формат, все шаблоны
+    for i in range(n_per_attr):
+        tmpl = MANUAL_TEMPLATES["IP"][i % len(MANUAL_TEMPLATES["IP"])]
+        ip = gen_ip()
+        test_texts.append((tmpl.format(IP=ip), "IP", ip))
+
+    # BIRTH_CERT — 3 формата × все шаблоны
+    for i in range(n_per_attr):
+        fmt = ["plain", "subj_space", "subj_dash"][i % 3]
+        tmpl = MANUAL_TEMPLATES["BIRTH_CERT"][(i // 3) % len(MANUAL_TEMPLATES["BIRTH_CERT"])]
+        bc = gen_birth_cert(fmt=fmt)
+        test_texts.append((tmpl.format(BIRTH_CERT=bc), "BIRTH_CERT", bc))
+
+    # KLADR — один формат, все шаблоны
+    for i in range(n_per_attr):
+        tmpl = MANUAL_TEMPLATES["KLADR"][i % len(MANUAL_TEMPLATES["KLADR"])]
+        kl = gen_kladr()
+        test_texts.append((tmpl.format(KLADR=kl), "KLADR", kl))
+
+    return test_texts
+
+
 def evaluate(factrueval_test_docs, n_per_attr: int = N_PER_ATTR) -> dict:
     """Оценивает predict() на Faker-тесте и factRuEval-тесте.
 
@@ -181,29 +257,7 @@ def evaluate(factrueval_test_docs, n_per_attr: int = N_PER_ATTR) -> dict:
     BERT грузится лениво внутри predict() при первом вызове.
     """
     # --- Генерируем Faker-тесты ---
-    test_texts = []                                             # (text, attr, value) — value нужен для gold-спана
-    for _ in range(n_per_attr):
-        n, s = gen_name(), gen_surname()                        # пара имя-фамилия
-        test_texts.append((random.choice(MANUAL_TEMPLATES["SURNAME"]).format(
-            SURNAME=s, SURNAME_OBL=s + "у"), "SURNAME", s))
-        test_texts.append((random.choice(MANUAL_TEMPLATES["NAME"]).format(
-            NAME=n), "NAME", n))
-        em = gen_email()
-        test_texts.append((random.choice(MANUAL_TEMPLATES["EMAIL"]).format(EMAIL=em), "EMAIL", em))
-        inn = gen_inn()
-        test_texts.append((random.choice(MANUAL_TEMPLATES["INN"]).format(INN=inn), "INN", inn))
-        cd = gen_card()
-        test_texts.append((random.choice(MANUAL_TEMPLATES["CREDIT_CARD"]).format(CARD=cd), "CREDIT_CARD", cd))
-        pp = gen_passport()
-        test_texts.append((random.choice(MANUAL_TEMPLATES["PASSPORT"]).format(PASSPORT=pp), "PASSPORT", pp))
-        og = gen_ogrnip()
-        test_texts.append((random.choice(MANUAL_TEMPLATES["OGRNIP"]).format(OGRNIP=og), "OGRNIP", og))
-        ip = gen_ip()
-        test_texts.append((random.choice(MANUAL_TEMPLATES["IP"]).format(IP=ip), "IP", ip))
-        bc = gen_birth_cert()
-        test_texts.append((random.choice(MANUAL_TEMPLATES["BIRTH_CERT"]).format(BIRTH_CERT=bc), "BIRTH_CERT", bc))
-        kl = gen_kladr()
-        test_texts.append((random.choice(MANUAL_TEMPLATES["KLADR"]).format(KLADR=kl), "KLADR", kl))
+    test_texts = _build_test_texts(n_per_attr)
 
     # --- Проверяем, что все сгенерированные значения валидны ---
     valid_data = True                                           # флаг: все ли тесты корректны
