@@ -1,0 +1,12 @@
+transformers==4.46.3
+datasets
+evaluate
+seqeval
+accelerate
+torch
+faker
+pymorphy3
+pymorphy3-dicts-ru
+corus
+scikit-learn
+pytest
