@@ -46,14 +46,6 @@ def inflect_to(word: str, grammemes: Dict[str, Optional[str]]) -> str:
     return inflected.word if inflected else word               # если не вышло — оригинал
 
 
-def _find_parse_with_tag(word: str, tag_name: str):
-    """Первый разбор pymorphy с тегом tag_name (Name/Surn/Patr)."""
-    for p in morph.parse(word):
-        if tag_name in p.tag:
-            return p
-    return None
-
-
 def get_grammemes(word: str) -> Dict[str, Optional[str]]:
     """Род, число и падеж слова (приоритет — разбору как ФИО)."""
     parses = morph.parse(word)
@@ -98,6 +90,10 @@ def _lemma(word: str, attr: str) -> str:
             return masc.word.lower()
     return chosen.normal_form.lower()
 
+def _normalize(s: str) -> str:
+    """lowercase + ё → е для сравнения лемм."""
+    return s.lower().replace("ё", "е")
+
 
 def _generate_normal_fio(attr: str, grammemes: Dict[str, Optional[str]]) -> str:
     """Генерирует новое слово в нормальной форме.
@@ -112,19 +108,93 @@ def _generate_normal_fio(attr: str, grammemes: Dict[str, Optional[str]]) -> str:
     return fake.first_name_male()
 
 
-def _inflect_new(new_normal: str, original: str) -> str:
-    """Склоняет новое слово к граммам оригинала (род/число/падеж)."""
+def _inflect_new(new_normal: str, original: str, attr: str) -> str:
+    """Склоняет новое слово к граммам оригинала с проверкой разбора.
+
+    Проблема: pymorphy может разобрать «Евгениев» как форму имени «Евгений»
+    (род. мн.ч.), а не как фамилию. Тогда inflect вернёт «Евгений» — имя
+    вместо фамилии. Поэтому:
+      1. Ищем разбор с тегом Surn (для фамилий) / Name (для имён).
+      2. Если после inflect слово «потеряло» суффикс фамилии — откатываемся
+         к нормальной форме без склонения.
+    """
     grammemes = get_grammemes(original)
     target = {g for g in (grammemes.get("gender"),
                           grammemes.get("number"),
                           grammemes.get("case")) if g}
     if not target:
         return new_normal.title()
+
     parses = morph.parse(new_normal)
     if not parses:
         return new_normal.title()
-    inflected = parses[0].inflect(target)
-    return inflected.word.title() if inflected else new_normal.title()
+
+    # Ищем «правильный» разбор — как фамилию для SURNAME, как имя для NAME
+    tag_name = "Surn" if attr == "SURNAME" else "Name"
+    chosen = None
+    for p in parses:
+        if tag_name in p.tag:
+            chosen = p
+            break
+    if chosen is None:
+        chosen = parses[0]
+
+    inflected = chosen.inflect(target)
+    result = inflected.word.title() if inflected else new_normal.title()
+
+    # Защита: результат должен сохранять корень new_normal.
+    # Для фамилий «Евгениев» → «Евгений» — это баг (потерян суффикс -ев).
+    if attr == "SURNAME":
+        # Отрезаем типовой суффикс, чтобы получить корень для сравнения
+        base = new_normal.title()
+        for suffix in ("ов", "ев", "ин", "ий"):
+            if base.lower().endswith(suffix):
+                base = base[:-len(suffix)]
+                break
+        if base and not result.lower().startswith(base.lower()[:3]):
+            return new_normal.title()                # inflect сломался — нормальная форма
+
+    return result
+
+
+def _extract_name_from_surname(surname: str) -> list:
+    """Кандидаты-леммы имён, от которых могла образоваться фамилия.
+
+    Иванов → ['иван'], Андреев → ['андре', 'андрей'], Никитин → ['никита', ...]
+    Использует нормализованную мужскую форму фамилии, затем отбрасывает
+    типовой суффикс -ов/-ев/-ин.
+    """
+    lemma = _lemma(surname, "SURNAME")               # мужская форма им.п.: «иванов»
+    candidates = []
+    if lemma.endswith("ов") or lemma.endswith("ев"):
+        base = lemma[:-2]                            # «иван»
+        candidates.extend([base, base + "й", base + "ь"])   # Иван, Андрей (Андреев), Игорь (Игорев)
+    elif lemma.endswith("ин"):
+        base = lemma[:-2]                            # «никит»
+        candidates.extend([base + "а", base + "я", base, base + "й"])  # Никита, Илья
+    return candidates
+
+
+def _derive_surname_from_name(name: str) -> str:
+    """Образует фамилию от имени по русским правилам.
+
+    Иван → Иванов, Андрей → Андреев, Никита → Никитин, Илья → Ильин.
+    Нечётные случаи (Лев → Львов, Юрий → Юрьев) дают «Левов»/«Юриев» —
+    редкие, но валидные формы. Для учебной задачи приемлемо.
+    """
+    n = _normalize(name)
+    if n.endswith("ий"):                             # Дмитрий → Дмитриев
+        return name[:-2] + "иев"
+    if n.endswith("а"):                              # Никита → Никитин
+        return name[:-1] + "ин"
+    if n.endswith("я"):                              # Илья → Ильин
+        return name[:-1] + "ин"
+    if n.endswith("й"):                              # Андрей → Андреев
+        return name[:-1] + "ев"
+    if n.endswith("ь"):                              # Игорь → Игорев
+        return name[:-1] + "ев"
+    return name + "ов"                               # Иван → Иванов, Пётр → Петров
+
 
 # ========== ОБЕЗЛИЧИВАНИЕ СТРУКТУРИРОВАННЫХ АТРИБУТОВ ==========
 def obfuscate_email(email: str) -> str:
@@ -298,17 +368,18 @@ def _obfuscate_value(attr: str, value: str) -> str:
 
 
 def anon(text: str, entities: List[Tuple[str, int, int]]) -> str:
-    """Обезличивает ПДн с идемпотентностью и однокоренными заменами.
+    """Обезличивает ПДн: идемпотентность + однокоренные + связка имя↔фамилия.
 
-    Идемпотентность: одинаковые сущности → одинаковые замены (кэш).
-    Однокоренные: «Иванов», «Иванова», «Ивановой» → «Петров», «Петрова»,
-    «Петровой» (одна лемма → одно новое слово, разные падежные формы).
-    Кэш живёт в рамках одного вызова — между вызовами значения разные.
+    1. Одинаковые сущности → одинаковые замены (кэш по лемме/значению).
+    2. Однокоренные ФИО (Иванов/Иванова/Ивановой) → одна замена в разных формах.
+    3. Если в тексте есть имя «Иван» и фамилия «Иванов» — новая фамилия
+       образуется от нового имени (Пётр → Петров).
+    4. Между вызовами значения разные (кэш живёт внутри одного вызова).
     """
     if not text or not entities:
         return text
 
-    # --- Фильтрация валидных сущностей ---
+    # --- Фильтрация и удаление перекрытий ---
     valid = []
     for e in entities:
         if not (isinstance(e, (tuple, list)) and len(e) == 3):
@@ -319,8 +390,6 @@ def anon(text: str, entities: List[Tuple[str, int, int]]) -> str:
         if start < 0 or end > len(text) or start >= end:
             continue
         valid.append((attr, start, end))
-
-    # --- Сортировка и удаление перекрытий ---
     valid.sort(key=lambda x: x[1])
     filtered = []
     last_end = 0
@@ -330,23 +399,46 @@ def anon(text: str, entities: List[Tuple[str, int, int]]) -> str:
         filtered.append((attr, start, end))
         last_end = end
 
-    # --- Кэш замен (идемпотентность + однокоренные) ---
-    cache: Dict[Tuple[str, str], str] = {}
+    # --- Первый проход: генерируем новые имена (для связки с фамилиями) ---
+    name_map = {}                                    # {лемма_имени → новое_имя}
+    for attr, start, end in filtered:
+        if attr == "NAME":
+            lemma = _lemma(text[start:end], "NAME")
+            if lemma not in name_map:
+                name_map[lemma] = _generate_normal_fio("NAME", get_grammemes(text[start:end]))
+
+    # --- Второй проход: применяем замены ---
+    cache = {}                                       # {(attr, ключ) → новое_значение}
     parts = []
     prev = 0
     for attr, start, end in filtered:
         parts.append(text[prev:start])
         original = text[start:end]
         try:
-            if attr in ("SURNAME", "NAME"):
-                # ключ — по лемме: «Иванов» и «Иванова» → одна замена
-                lemma = _lemma(original, attr)
-                key = (attr, lemma)
+            if attr == "NAME":
+                lemma = _lemma(original, "NAME")
+                key = ("NAME", lemma)
                 if key not in cache:
-                    cache[key] = _generate_normal_fio(attr, get_grammemes(original))
-                replaced = _inflect_new(cache[key], original)   # склоняем к падежу оригинала
+                    cache[key] = name_map[lemma]
+                replaced = _inflect_new(cache[key], original, "NAME")
+
+            elif attr == "SURNAME":
+                lemma = _lemma(original, "SURNAME")
+                key = ("SURNAME", lemma)
+                if key not in cache:
+                    # Пробуем связать с именем из текста
+                    linked = None
+                    for cand in _extract_name_from_surname(original):
+                        if cand in name_map:
+                            linked = name_map[cand]
+                            break
+                    if linked:
+                        cache[key] = _derive_surname_from_name(linked)  # Пётр → Петров
+                    else:
+                        cache[key] = _generate_normal_fio("SURNAME", get_grammemes(original))
+                replaced = _inflect_new(cache[key], original, "SURNAME")
+
             else:
-                # ключ — по точному значению: два одинаковых ИНН → один новый
                 key = (attr, original)
                 if key not in cache:
                     cache[key] = _obfuscate_value(attr, original)
