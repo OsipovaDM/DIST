@@ -30,7 +30,6 @@ dataset.py      — загрузка и разметка factRuEval
 training.py     — обучение BERT
 evaluation.py   — Faker-тесты, метрики
 main.py         — оркестратор и демонстрация
-test_all.py     — юнит-тесты (pytest)
 ```
 
 ## Использование
